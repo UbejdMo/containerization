@@ -7,6 +7,32 @@ change at all — only where the data lives did.
 
 Everything still lives in one file, [`main.py`](main.py).
 
+## How the table gets created
+
+The `tasks` table is defined once, in [`db/schema.sql`](db/schema.sql), and applied by
+**Postgres's `docker-entrypoint-initdb.d` mount** rather than by an init step inside the
+app. The compose file mounts the file read-only into the container, and the official
+`postgres` image runs everything in that directory the first time the data volume is
+initialised.
+
+That choice was the simpler of the two the brief offered. The app already had to stop
+owning its schema when the repository interface came out of `main.py`, and the
+entrypoint mount finishes that job: no DDL in Python, no "have I migrated yet?" check on
+every startup, and the schema is a plain `.sql` file that `psql` can read.
+
+The trade-off worth knowing: **the entrypoint only fires on an empty data volume.** Edit
+`db/schema.sql` against a volume that already exists and nothing happens. Either recreate
+the volume with `docker compose down -v` (which deletes the data), or apply the file by
+hand:
+
+```bash
+docker compose exec -T db psql -U tasks -d tasks -f /docker-entrypoint-initdb.d/schema.sql
+```
+
+Both statements in the file are guarded — `CREATE TABLE IF NOT EXISTS`, and a seed that
+only inserts `WHERE NOT EXISTS (SELECT 1 FROM tasks)` — so running it by hand is safe and
+will not duplicate the example rows.
+
 ## Why SQLite
 
 The Week 2 version kept tasks in a Python list, which meant every restart wiped them.

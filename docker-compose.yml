@@ -1,4 +1,4 @@
-# Stage 2: the database, with every credential coming from .env.
+# Stage 3: the database, credentials from .env, schema from db/schema.sql.
 # The app joins this file later.
 #
 # Docker Compose reads .env from this directory automatically, so ${POSTGRES_USER}
@@ -27,6 +27,11 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Anything in /docker-entrypoint-initdb.d is executed by the postgres
+      # image the first time the data directory is initialised - which is
+      # how the tasks table gets created without the app owning any DDL.
+      # Read-only, because the container has no business editing our schema.
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
     healthcheck:
       # Postgres accepts TCP connections a moment before it is ready to answer
       # queries, so "the port is open" is not the same as "the database is up".
