@@ -22,9 +22,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      # Published so psql and a host-run app can reach it on localhost:5432 -
-      # which is exactly what DATABASE_URL in .env points at.
-      - "5432:5432"
+      # host:container. The container side is always 5432; the host side is a
+      # variable because 5432 is a popular port - a locally installed Postgres
+      # service will already have it, and Docker publishing "successfully" on a
+      # taken port means connections silently reach the wrong server. Keep this
+      # in step with the host in DATABASE_URL.
+      - "${POSTGRES_HOST_PORT}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Anything in /docker-entrypoint-initdb.d is executed by the postgres
