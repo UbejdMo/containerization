@@ -1,0 +1,12 @@
+# The API itself. The [standard] extra brings uvicorn and httpx, which are what
+# `uvicorn main:app` and verify_api.py need.
+fastapi[standard]==0.136.1
+
+# Postgres driver. [binary] ships prebuilt libpq so no compiler or client
+# library is needed; [pool] is psycopg_pool, used by PostgresTaskRepository.
+# No ORM - the SQL is written by hand, same as the SQLite version was.
+psycopg[binary,pool]==3.3.3
+
+# Reads .env when the app is run directly on the host. Inside Docker the
+# variables come from compose and this changes nothing.
+python-dotenv==1.0.1
