@@ -1,0 +1,31 @@
+# Stage 1: just the database. The app joins this file later.
+#
+# The named volume is the whole point: without it, Postgres writes its data
+# inside the container's own writable layer, and `docker compose down` throws
+# that layer away along with every row. With it, the data lives in a volume
+# Docker manages separately, so the container is disposable and the data is not.
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: tasks-db
+    environment:
+      POSTGRES_USER: tasks
+      POSTGRES_PASSWORD: tasks
+      POSTGRES_DB: tasks
+    ports:
+      # Exposed on the host so psql and the not-yet-containerised app can reach it.
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Postgres accepts TCP connections a moment before it is ready to answer
+      # queries, so "the port is open" is not the same as "the database is up".
+      # pg_isready asks the server itself, which is what the app will wait on.
+      test: ["CMD-SHELL", "pg_isready -U tasks -d tasks"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
