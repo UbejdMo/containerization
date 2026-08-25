@@ -1,20 +1,29 @@
-# Stage 1: just the database. The app joins this file later.
+# Stage 2: the database, with every credential coming from .env.
+# The app joins this file later.
 #
-# The named volume is the whole point: without it, Postgres writes its data
-# inside the container's own writable layer, and `docker compose down` throws
-# that layer away along with every row. With it, the data lives in a volume
-# Docker manages separately, so the container is disposable and the data is not.
+# Docker Compose reads .env from this directory automatically, so ${POSTGRES_USER}
+# and friends below are filled in without any --env-file flag. .env is gitignored;
+# .env.example is the committed template.
+#
+# The named volume is the whole point of running the database this way: without
+# it, Postgres writes its data inside the container's own writable layer, and
+# `docker compose down` throws that layer away along with every row. With it,
+# the data lives in a volume Docker manages separately, so the container is
+# disposable and the data is not.
 
 services:
   db:
     image: postgres:17-alpine
     container_name: tasks-db
     environment:
-      POSTGRES_USER: tasks
-      POSTGRES_PASSWORD: tasks
-      POSTGRES_DB: tasks
+      # These three are read by the postgres image's entrypoint on first start,
+      # and they are what create the role and the database inside the volume.
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      # Exposed on the host so psql and the not-yet-containerised app can reach it.
+      # Published so psql and a host-run app can reach it on localhost:5432 -
+      # which is exactly what DATABASE_URL in .env points at.
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -22,7 +31,7 @@ services:
       # Postgres accepts TCP connections a moment before it is ready to answer
       # queries, so "the port is open" is not the same as "the database is up".
       # pg_isready asks the server itself, which is what the app will wait on.
-      test: ["CMD-SHELL", "pg_isready -U tasks -d tasks"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
