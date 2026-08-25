@@ -1,5 +1,6 @@
-# Stage 3: the database, credentials from .env, schema from db/schema.sql.
-# The app joins this file later.
+# The whole stack: `docker compose up` starts the API and its database.
+#
+# Credentials come from .env, the schema from db/schema.sql.
 #
 # Docker Compose reads .env from this directory automatically, so ${POSTGRES_USER}
 # and friends below are filled in without any --env-file flag. .env is gitignored;
@@ -43,6 +44,29 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  app:
+    build: .
+    container_name: tasks-api
+    environment:
+      # Built here rather than taken from .env, because the two are genuinely
+      # different addresses for the same server: .env's DATABASE_URL points at
+      # the published port on the host, which is what a locally run
+      # `uvicorn main:app` needs. From inside this network the app reaches the
+      # database by its service name, db, on its real port 5432 - no published
+      # port involved.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    ports:
+      - "${APP_HOST_PORT}:8000"
+    depends_on:
+      db:
+        # The condition is the point. A bare `depends_on: [db]` only waits for
+        # the container to start, and Postgres takes a few seconds after that
+        # before it will answer a query - long enough for the app to come up,
+        # fail to connect, and exit. service_healthy waits for the pg_isready
+        # healthcheck above to actually pass.
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:

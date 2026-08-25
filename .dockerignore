@@ -1,0 +1,16 @@
+# Keep the build context small, and keep local-only files out of the image.
+.git
+.venv
+__pycache__
+*.pyc
+docs
+
+# Never bake real credentials into an image layer - compose supplies the
+# environment at run time instead.
+.env
+
+# The SQLite database is a local artefact of the other backend.
+tasks.db
+
+# The assignment brief is local-only.
+CLAUDE.md
