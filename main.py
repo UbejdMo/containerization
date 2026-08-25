@@ -1,21 +1,21 @@
-"""Task API - Week 2 assignment.
+"""Task API.
 
-A tiny CRUD API over a SQLite database, documented at /docs.
+A tiny CRUD API over a real database, documented at /docs. Storage lives
+behind the TaskRepository interface in repository.py, so this file holds
+routes, validation and error shapes - and no SQL at all.
 Every error answers {"error": "..."}, validation failures are 400 (never
 FastAPI's default 422), and DELETE returns a bare 204.
 
 Run it with:  uvicorn main:app --reload
 """
 
-import sqlite3
-import threading
-from pathlib import Path
-
 from fastapi import Body, FastAPI, HTTPException, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+from storage import get_repository
 
 app = FastAPI(
     title="Task API",
@@ -30,55 +30,9 @@ app = FastAPI(
     version="1.0",
 )
 
-# Where the database lives: tasks.db, right next to this file at the repo root.
-# Resolving it from __file__ instead of the current working directory means
-# `uvicorn main:app` finds the same file no matter which folder it is run from.
-DB_PATH = Path(__file__).with_name("tasks.db")
-
-# The rows a brand-new database starts life with, as (title, done) pairs. They
-# are inserted exactly once - on the very first run - and never again.
-SEED_TASKS = [
-    ("Buy milk", 0),
-    ("Read a chapter of the FastAPI docs", 1),
-    ("Walk the dog", 0),
-]
-
-# check_same_thread=False because FastAPI runs sync endpoints in a threadpool,
-# so this connection gets touched by more than one thread. SQLite is fine with
-# that as long as the calls are serialised, which is what db_lock is for.
-db = sqlite3.connect(DB_PATH, check_same_thread=False)
-db.row_factory = sqlite3.Row
-db_lock = threading.Lock()
-
-
-def init_db() -> None:
-    """Create the tasks table if it is missing, then seed it once.
-
-    Both halves are guarded so that restarting the server is harmless:
-    CREATE TABLE IF NOT EXISTS does nothing on run two, and the seed only fires
-    when the table is genuinely empty. That is why the example tasks show up
-    once, ever, instead of three more of them every time the process starts.
-
-    id is a plain INTEGER PRIMARY KEY rather than AUTOINCREMENT on purpose - it
-    aliases SQLite's rowid, so an insert gets max(id) + 1, which is the same id
-    rule Assignment 1 used.
-    """
-    with db_lock, db:
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
-                id    INTEGER PRIMARY KEY,
-                title TEXT    NOT NULL,
-                done  BOOLEAN NOT NULL DEFAULT 0
-            )
-            """
-        )
-        (count,) = db.execute("SELECT COUNT(*) FROM tasks").fetchone()
-        if count == 0:
-            db.executemany("INSERT INTO tasks (title, done) VALUES (?, ?)", SEED_TASKS)
-
-
-init_db()
+# The one line that decides where tasks are stored. Everything below talks to
+# the TaskRepository interface and never to a database driver.
+repo = get_repository()
 
 TITLE_ERROR = "title is required and must be a non-empty string"
 DONE_ERROR = "done must be true or false"
@@ -133,36 +87,6 @@ def validation_exception_handler(request, exc: RequestValidationError):
     return JSONResponse(status_code=400, content={"error": message})
 
 
-def row_to_task(row: sqlite3.Row) -> dict:
-    """Turn one database row into the exact JSON shape the API promises.
-
-    SQLite has no real boolean type - done comes back as 0 or 1 - so the cast
-    to True/False happens here, in one place, instead of in every route.
-    """
-    return {"id": row["id"], "title": row["title"], "done": bool(row["done"])}
-
-
-def select_tasks() -> list[dict]:
-    """Every task, oldest first. ORDER BY id makes that ordering a promise
-    rather than something SQLite happens to do today."""
-    with db_lock:
-        rows = db.execute("SELECT id, title, done FROM tasks ORDER BY id").fetchall()
-    return [row_to_task(row) for row in rows]
-
-
-def select_task(task_id: int) -> dict | None:
-    """One task by id, or None if the database has no such row.
-
-    The id goes in as a ? parameter, never string-formatted into the SQL -
-    that is what stops a crafted id from being executed as SQL.
-    """
-    with db_lock:
-        row = db.execute(
-            "SELECT id, title, done FROM tasks WHERE id = ?", (task_id,)
-        ).fetchone()
-    return row_to_task(row) if row else None
-
-
 def clean_title(payload: dict) -> str:
     """Validate the client's title and hand back a trimmed one.
 
@@ -205,7 +129,7 @@ def health():
     "list is never paginated.",
 )
 def list_tasks():
-    return select_tasks()
+    return repo.get_all()
 
 
 @app.get(
@@ -218,7 +142,7 @@ def list_tasks():
     "integer id is a 404.",
 )
 def get_task(task_id: int):
-    task = select_task(task_id)
+    task = repo.get_by_id(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
     return task
@@ -231,21 +155,17 @@ def get_task(task_id: int):
     responses={400: BAD_REQUEST},
     tags=["tasks"],
     summary="Create a task",
-    description="Send a title. SQLite assigns the id and the task always starts "
-    "at done=false - a done sent by the client is ignored.",
+    description="Send a title. The database assigns the id and the task always "
+    "starts at done=false - a done sent by the client is ignored.",
 )
 def create_task(payload: dict = Body(..., examples=[{"title": "Buy milk"}])):
     # Validate first: a bad title must be a 400 without ever touching the
     # database, so a rejected request leaves no trace behind.
     title = clean_title(payload)
 
-    with db_lock, db:
-        cursor = db.execute("INSERT INTO tasks (title, done) VALUES (?, 0)", (title,))
-
-    # lastrowid is the id SQLite just handed out, so there is no need to read
-    # the table back or to compute max(id) + 1 by hand the way the in-memory
-    # version had to.
-    return {"id": cursor.lastrowid, "title": title, "done": False}
+    # The id comes from the database, not from counting rows here - which is
+    # why the repository hands the stored task back rather than taking one.
+    return repo.create(title)
 
 
 @app.put(
@@ -261,7 +181,7 @@ def update_task(
     task_id: int,
     payload: dict = Body(..., examples=[{"title": "Buy oat milk", "done": True}]),
 ):
-    if select_task(task_id) is None:
+    if repo.get_by_id(task_id) is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
     # Both fields are optional, but an empty body means the client asked for
@@ -278,24 +198,15 @@ def update_task(
     if "done" in payload:
         if not isinstance(payload["done"], bool):
             raise HTTPException(status_code=400, detail=DONE_ERROR)
-        # SQLite has no boolean type, so True/False is stored as 1/0.
-        updates["done"] = int(payload["done"])
+        # A real bool goes to the repository. How a given database spells
+        # true - 1 in SQLite, TRUE in Postgres - is that repository's problem.
+        updates["done"] = payload["done"]
 
-    # The column names are interpolated into the SQL, the values are not. That
-    # is safe because the names can only ever be the literals "title" and
-    # "done" - nothing the client sends reaches the SQL text. Leaving the
-    # untouched column out of SET is what makes an omitted field keep its
-    # stored value instead of being overwritten.
-    assignments = ", ".join(f"{column} = ?" for column in updates)
-    with db_lock, db:
-        db.execute(
-            f"UPDATE tasks SET {assignments} WHERE id = ?",
-            (*updates.values(), task_id),
-        )
-
-    # Read the row back instead of echoing the request, so the response is
-    # what the database actually holds.
-    return select_task(task_id)
+    # Only the columns the client sent are handed over, which is what makes an
+    # omitted field keep its stored value instead of being overwritten. The
+    # repository returns the row as it now stands, so the response is what the
+    # database actually holds rather than an echo of the request.
+    return repo.update(task_id, updates)
 
 
 @app.delete(
@@ -308,12 +219,9 @@ def update_task(
     description="Removes the task and returns 204 with no body at all.",
 )
 def delete_task(task_id: int):
-    with db_lock, db:
-        cursor = db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-
-    # rowcount is 0 when the WHERE matched nothing, which is exactly the 404
-    # case - so one statement does the lookup and the delete together.
-    if cursor.rowcount == 0:
+    # remove() is False when nothing matched, which is exactly the 404 case -
+    # so the lookup and the delete stay a single statement inside the database.
+    if not repo.remove(task_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
     # 204 means "done, and there is deliberately nothing to send back".
